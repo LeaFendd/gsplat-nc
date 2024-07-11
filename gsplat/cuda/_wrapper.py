@@ -154,7 +154,7 @@ def fully_fused_projection(
     packed: bool = False,
     sparse_grad: bool = False,
     calc_compensations: bool = False,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Projects Gaussians to 2D.
 
     This function fuse the process of computing covariances
@@ -707,9 +707,9 @@ class _FullyFusedProjection(torch.autograd.Function):
         far_plane: float,
         radius_clip: float,
         calc_compensations: bool,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         # "covars" and {"quats", "scales"} are mutually exclusive
-        radii, means2d, depths, conics, compensations = _make_lazy_cuda_func(
+        radii, means2d, depths, conics, normals, compensations = _make_lazy_cuda_func(
             "fully_fused_projection_fwd"
         )(
             means,
@@ -735,7 +735,7 @@ class _FullyFusedProjection(torch.autograd.Function):
         ctx.height = height
         ctx.eps2d = eps2d
 
-        return radii, means2d, depths, conics, compensations
+        return radii, means2d, depths, conics, normals, compensations
 
     @staticmethod
     def backward(ctx, v_radii, v_means2d, v_depths, v_conics, v_compensations):

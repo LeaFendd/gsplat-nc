@@ -422,4 +422,30 @@ inline __device__ void add_blur_vjp(
                                    eps2d * det_conic_blur);
 }
 
+#define NORMAL_AXIS 2 // define z-axis as the normal direction of a gaussian
+template <typename T>
+inline __device__ void quat_to_normal(const vec4<T> quat, vec3<T> &normal) {
+    mat3<T> R = quat_to_rotmat(quat);
+    normal = R[NORMAL_AXIS];
+}
+
+template <typename T>
+inline __device__ void quat_to_normal_vjp(
+    // fwd inputs
+    const vec4<T> quat,
+    // grad outputs
+    const vec3<T> v_normal,
+    // grad inputs
+    vec4<T> &v_quat
+) {
+    // TODO (wei): can simplify this in math
+    vec3<T> e(0.f);
+    e[NORMAL_AXIS] = 1.0f;
+    mat3<T> v_R(0.f);
+    v_R[0][NORMAL_AXIS] = v_normal.x;
+    v_R[1][NORMAL_AXIS] = v_normal.y;
+    v_R[2][NORMAL_AXIS] = v_normal.z;
+    quat_to_rotmat_vjp(quat, v_R, v_quat);
+}
+
 #endif // GSPLAT_CUDA_UTILS_H

@@ -35,6 +35,7 @@ __global__ void fully_fused_projection_fwd_kernel(
     T *__restrict__ means2d,      // [C, N, 2]
     T *__restrict__ depths,       // [C, N]
     T *__restrict__ conics,       // [C, N, 3]
+    T *__restrict__ normals,      // [C, N, 3]
     T *__restrict__ compensations // [C, N] optional
 ) {
     // parallelize over C * N.
@@ -74,6 +75,8 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // transform Gaussian covariance to camera space
     mat3<T> covar;
+    vec3<T> normal(0.f);
+    vec3<T> normal_c(0.f); // in camera space
     if (covars != nullptr) {
         covars += gid * 6;
         covar = mat3<T>(
@@ -94,6 +97,9 @@ __global__ void fully_fused_projection_fwd_kernel(
         quat_scale_to_covar_preci<T>(
             glm::make_vec4(quats), glm::make_vec3(scales), &covar, nullptr
         );
+        // NOTE we only compute normals when quats provided
+        quat_to_normal(glm::make_vec4(quats), normal);
+        normal_c = R * normal;
     }
     mat3<T> covar_c;
     covar_world_to_cam(R, covar, covar_c);
@@ -152,12 +158,16 @@ __global__ void fully_fused_projection_fwd_kernel(
     conics[idx * 3] = covar2d_inv[0][0];
     conics[idx * 3 + 1] = covar2d_inv[0][1];
     conics[idx * 3 + 2] = covar2d_inv[1][1];
+    normals[idx * 3] = normal_c.x;
+    normals[idx * 3 + 1] = normal_c.y;
+    normals[idx * 3 + 2] = normal_c.z;
     if (compensations != nullptr) {
         compensations[idx] = compensation;
     }
 }
 
 std::tuple<
+    torch::Tensor,
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
@@ -199,6 +209,7 @@ fully_fused_projection_fwd_tensor(
     torch::Tensor means2d = torch::empty({C, N, 2}, means.options());
     torch::Tensor depths = torch::empty({C, N}, means.options());
     torch::Tensor conics = torch::empty({C, N, 3}, means.options());
+    torch::Tensor normals = torch::empty({C, N, 3}, means.options());
     torch::Tensor compensations;
     if (calc_compensations) {
         // we dont want NaN to appear in this tensor, so we zero intialize it
@@ -225,8 +236,11 @@ fully_fused_projection_fwd_tensor(
                 means2d.data_ptr<float>(),
                 depths.data_ptr<float>(),
                 conics.data_ptr<float>(),
+                normals.data_ptr<float>(),
                 calc_compensations ? compensations.data_ptr<float>() : nullptr
             );
     }
-    return std::make_tuple(radii, means2d, depths, conics, compensations);
+    return std::make_tuple(
+        radii, means2d, depths, conics, normals, compensations
+    );
 }
