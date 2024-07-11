@@ -148,14 +148,15 @@ torch::Tensor isect_offset_encode_tensor(
     const uint32_t tile_height
 );
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
-    const torch::Tensor &means2d,                   // [C, N, 2]
-    const torch::Tensor &conics,                    // [C, N, 3]
-    const torch::Tensor &colors,                    // [C, N, D]
-    const torch::Tensor &opacities,                 // [N]
-    const at::optional<torch::Tensor> &backgrounds, // [C, D]
+    const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
+    const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &normals,   // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
+    const torch::Tensor &opacities, // [C, N]  or [nnz]
+    const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     // image size
     const uint32_t image_width,
     const uint32_t image_height,
@@ -218,6 +219,7 @@ torch::Tensor compute_sh_fwd_tensor(
     torch::Tensor &coeffs,            // [..., K, 3]
     at::optional<torch::Tensor> masks // [...]
 );
+
 std::tuple<torch::Tensor, torch::Tensor> compute_sh_bwd_tensor(
     const uint32_t K,
     const uint32_t degrees_to_use,

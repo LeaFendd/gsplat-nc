@@ -75,8 +75,8 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // transform Gaussian covariance to camera space
     mat3<T> covar;
-    vec3<T> normal(0.f);
-    vec3<T> normal_c(0.f); // in camera space
+    vec3<T> normal(1.f);
+    vec3<T> normal_c(2.f); // in camera space
     if (covars != nullptr) {
         covars += gid * 6;
         covar = mat3<T>(

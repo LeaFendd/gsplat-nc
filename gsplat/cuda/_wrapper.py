@@ -371,6 +371,7 @@ def isect_offset_encode(
 def rasterize_to_pixels(
     means2d: Tensor,  # [C, N, 2] or [nnz, 2]
     conics: Tensor,  # [C, N, 3] or [nnz, 3]
+    normals: Tensor,  # [C, N, 3] or [nnz, 3]
     colors: Tensor,  # [C, N, channels] or [nnz, channels]
     opacities: Tensor,  # [C, N] or [nnz]
     image_width: int,
@@ -478,9 +479,10 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    render_colors, render_alphas = _RasterizeToPixels.apply(
+    render_colors, render_alphas, render_normals = _RasterizeToPixels.apply(
         means2d.contiguous(),
         conics.contiguous(),
+        normals.contiguous(),
         colors.contiguous(),
         opacities.contiguous(),
         backgrounds,
@@ -494,7 +496,7 @@ def rasterize_to_pixels(
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
-    return render_colors, render_alphas
+    return render_colors, render_alphas, render_normals
 
 
 @torch.no_grad()
@@ -814,6 +816,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         ctx,
         means2d: Tensor,  # [C, N, 2]
         conics: Tensor,  # [C, N, 3]
+        normals: Tensor,  # [C, N, 3]
         colors: Tensor,  # [C, N, D]
         opacities: Tensor,  # [C, N]
         backgrounds: Tensor,  # [C, D], Optional
@@ -824,11 +827,12 @@ class _RasterizeToPixels(torch.autograd.Function):
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+        render_colors, render_alphas, render_normals, last_ids = _make_lazy_cuda_func(
             "rasterize_to_pixels_fwd"
         )(
             means2d,
             conics,
+            normals,
             colors,
             opacities,
             backgrounds,
@@ -857,7 +861,7 @@ class _RasterizeToPixels(torch.autograd.Function):
 
         # double to float
         render_alphas = render_alphas.float()
-        return render_colors, render_alphas
+        return render_colors, render_alphas, render_normals
 
     @staticmethod
     def backward(
