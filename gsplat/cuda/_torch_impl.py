@@ -302,6 +302,7 @@ def _isect_offset_encode(
 def accumulate(
     means2d: Tensor,  # [C, N, 2]
     conics: Tensor,  # [C, N, 3]
+    normals: Tensor,  # [C, N, 3]
     opacities: Tensor,  # [C, N]
     colors: Tensor,  # [C, N, channels]
     gaussian_ids: Tensor,  # [M]
@@ -385,13 +386,20 @@ def accumulate(
     alphas = accumulate_along_rays(
         weights, None, ray_indices=indices, n_rays=total_pixels
     ).reshape(C, image_height, image_width, 1)
+    normals = accumulate_along_rays(
+        weights,
+        normals[camera_ids, gaussian_ids],
+        ray_indices=indices,
+        n_rays=total_pixels,
+    ).reshape(C, image_height, image_width, 3)
 
-    return renders, alphas
+    return renders, alphas, normals
 
 
 def _rasterize_to_pixels(
     means2d: Tensor,  # [C, N, 2]
     conics: Tensor,  # [C, N, 3]
+    normals: Tensor,  # [C, N, 3]
     colors: Tensor,  # [C, N, channels]
     opacities: Tensor,  # [C, N]
     image_width: int,
@@ -434,6 +442,7 @@ def _rasterize_to_pixels(
         (C, image_height, image_width, colors.shape[-1]), device=device
     )
     render_alphas = torch.zeros((C, image_height, image_width, 1), device=device)
+    render_normals = torch.zeros((C, image_height, image_width, 3), device=device)
 
     # Split Gaussians into batches and iteratively accumulate the renderings
     block_size = tile_size * tile_size
@@ -464,9 +473,10 @@ def _rasterize_to_pixels(
             break
 
         # Accumulate the renderings within this batch of Gaussians.
-        renders_step, accs_step = accumulate(
+        renders_step, accs_step, normals_step = accumulate(
             means2d,
             conics,
+            normals,
             opacities,
             colors,
             gs_ids,
@@ -477,6 +487,7 @@ def _rasterize_to_pixels(
         )
         render_colors = render_colors + renders_step * transmittances[..., None]
         render_alphas = render_alphas + accs_step * transmittances[..., None]
+        render_normals = render_normals + normals_step * transmittances[..., None]
 
     render_alphas = render_alphas
     if backgrounds is not None:
@@ -484,7 +495,7 @@ def _rasterize_to_pixels(
             1.0 - render_alphas
         )
 
-    return render_colors, render_alphas
+    return render_colors, render_alphas, render_normals
 
 
 def _eval_sh_bases_fast(basis_dim: int, dirs: Tensor):

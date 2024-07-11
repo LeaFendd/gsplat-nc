@@ -33,6 +33,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     S *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     vec3<S> *__restrict__ render_normals, // [C, image_height, image_width, 3]
+    S *__restrict__ render_norm_uc,       // [C, image_height, image_width, 3]
     int32_t *__restrict__ last_ids        // [C, image_height, image_width]
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
@@ -49,6 +50,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     render_colors += camera_id * image_height * image_width * COLOR_DIM;
     render_alphas += camera_id * image_height * image_width;
     render_normals += camera_id * image_height * image_width;
+    render_norm_uc += camera_id * image_height * image_width;
     last_ids += camera_id * image_height * image_width;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
@@ -100,6 +102,8 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
     S pix_out[COLOR_DIM] = {0.f};
     vec3<S> normal_out = {0.f, 0.f, 0.f};
+    S norm_uc_out = 0.f;
+
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
@@ -147,6 +151,9 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
             int32_t g = id_batch[t];
             const S vis = alpha * T;
+            // render normal and normal uncerntainty
+            // TODO need formula link here
+            norm_uc_out += vis * (T - glm::dot(normal_out, normal_batch[t]));
             normal_out += normal_batch[t] * vis;
 
             const S *c_ptr = colors + g * COLOR_DIM;
@@ -168,6 +175,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         // slower so we stick with float for now.
         render_alphas[pix_id] = 1.0f - T;
         render_normals[pix_id] = normal_out;
+        render_norm_uc[pix_id] = norm_uc_out;
         PRAGMA_UNROLL
         for (uint32_t k = 0; k < COLOR_DIM; ++k) {
             render_colors[pix_id * COLOR_DIM + k] =
@@ -180,7 +188,12 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 }
 
 template <uint32_t CDIM>
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor>
 call_kernel_with_dim(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
@@ -226,11 +239,15 @@ call_kernel_with_dim(
         {C, image_height, image_width, channels},
         means2d.options().dtype(torch::kFloat32)
     );
+    torch::Tensor alphas = torch::empty(
+        {C, image_height, image_width, 1},
+        means2d.options().dtype(torch::kFloat32)
+    );
     torch::Tensor render_normals = torch::empty(
         {C, image_height, image_width, 3},
         means2d.options().dtype(torch::kFloat32)
     );
-    torch::Tensor alphas = torch::empty(
+    torch::Tensor render_norm_uc = torch::empty(
         {C, image_height, image_width, 1},
         means2d.options().dtype(torch::kFloat32)
     );
@@ -280,13 +297,21 @@ call_kernel_with_dim(
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             reinterpret_cast<vec3<float> *>(render_normals.data_ptr<float>()),
+            render_norm_uc.data_ptr<float>(),
             last_ids.data_ptr<int32_t>()
         );
 
-    return std::make_tuple(renders, alphas, render_normals, last_ids);
+    return std::make_tuple(
+        renders, alphas, render_normals, render_norm_uc, last_ids
+    );
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor,
+    torch::Tensor>
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
