@@ -36,6 +36,7 @@ __global__ void fully_fused_projection_bwd_kernel(
     const T *__restrict__ v_means2d,       // [C, N, 2]
     const T *__restrict__ v_depths,        // [C, N]
     const T *__restrict__ v_conics,        // [C, N, 3]
+    const T *__restrict__ v_normals,       // [C, N, 3]
     const T *__restrict__ v_compensations, // [C, N] optional
     // grad inputs
     T *__restrict__ v_means,   // [N, 3]
@@ -62,6 +63,7 @@ __global__ void fully_fused_projection_bwd_kernel(
     v_means2d += idx * 2;
     v_depths += idx;
     v_conics += idx * 3;
+    v_normals += idx * 3;
 
     // vjp: compute the inverse of the 2d covariance
     mat2<T> covar2d_inv = mat2<T>(conics[0], conics[1], conics[1], conics[2]);
@@ -186,6 +188,11 @@ __global__ void fully_fused_projection_bwd_kernel(
         quat_scale_to_covar_vjp<T>(
             quat, scale, rotmat, v_covar, v_quat, v_scale
         );
+        // from v_normal
+        const vec3<T> v_normal_c = glm::make_vec3(v_normals);
+        const vec3<T> v_normal = glm::transpose(R) * v_normal_c;
+        quat_to_normal_vjp<T>(quat, v_normal, v_quat);
+
         warpSum(v_quat, warp_group_g);
         warpSum(v_scale, warp_group_g);
         if (warp_group_g.thread_rank() == 0) {
@@ -243,6 +250,7 @@ fully_fused_projection_bwd_tensor(
     const torch::Tensor &v_means2d,                     // [C, N, 2]
     const torch::Tensor &v_depths,                      // [C, N]
     const torch::Tensor &v_conics,                      // [C, N, 3]
+    const torch::Tensor &v_normals,                     // [C, N, 3]
     const at::optional<torch::Tensor> &v_compensations, // [C, N] optional
     const bool viewmats_requires_grad
 ) {
@@ -262,6 +270,7 @@ fully_fused_projection_bwd_tensor(
     CHECK_INPUT(v_means2d);
     CHECK_INPUT(v_depths);
     CHECK_INPUT(v_conics);
+    CHECK_INPUT(v_normals);
     if (compensations.has_value()) {
         CHECK_INPUT(compensations.value());
     }
@@ -308,6 +317,7 @@ fully_fused_projection_bwd_tensor(
                 v_means2d.data_ptr<float>(),
                 v_depths.data_ptr<float>(),
                 v_conics.data_ptr<float>(),
+                v_normals.data_ptr<float>(),
                 v_compensations.has_value()
                     ? v_compensations.value().data_ptr<float>()
                     : nullptr,

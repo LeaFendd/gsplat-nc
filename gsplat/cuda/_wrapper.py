@@ -738,7 +738,9 @@ class _FullyFusedProjection(torch.autograd.Function):
         return radii, means2d, depths, conics, normals, compensations
 
     @staticmethod
-    def backward(ctx, v_radii, v_means2d, v_depths, v_conics, v_compensations):
+    def backward(
+        ctx, v_radii, v_means2d, v_depths, v_conics, v_normals, v_compensations
+    ):
         (
             means,
             covars,
@@ -773,6 +775,7 @@ class _FullyFusedProjection(torch.autograd.Function):
             v_means2d.contiguous(),
             v_depths.contiguous(),
             v_conics.contiguous(),
+            v_normals.contiguous(),
             v_compensations,
             ctx.needs_input_grad[4],  # viewmats_requires_grad
         )
