@@ -448,4 +448,50 @@ inline __device__ void quat_to_normal_vjp(
     quat_to_rotmat_vjp(quat, v_R, v_quat);
 }
 
+template <typename T>
+inline __device__ vec3<T> ray_dir(
+    const T focal_w,
+    const T focal_h,
+    const T cw,
+    const T ch,
+    const vec2<T> pix2d
+) {
+    // K^{-1} * x
+    vec3<T> ray_dir =
+        vec3<T>((pix2d[0] - cw) / focal_w, (pix2d[1] - ch) / focal_h, 1.f);
+    // normalize
+    ray_dir = glm::normalize(ray_dir);
+
+    return ray_dir;
+}
+
+template <typename T>
+inline __device__ void unbias_depth(
+    const vec3<T> ray_dir, // ray direction of this pixel
+    const vec3<T> point,   // mean3d of target Gaussian
+    const vec3<T> normal,  // normal of target Gaussian
+    T &depth
+) {
+    // TODO add formula for depth here
+    T depth = glm::dot(point, normal) / glm::dot(ray_dir, normal);
+}
+
+template <typename T>
+inline __device__ void unbias_depth_vjp(
+    // fwd inputs
+    const vec3<T> ray_dir, // ray direction of this pixel
+    const vec3<T> point,   // mean3d of target Gaussian
+    const vec3<T> normal,  // normal of target Gaussian
+    // grad outputs
+    const T v_depth,
+    // grad inputs
+    vec3<T> &v_point,
+    vec3<T> &v_normal
+) {
+    T fac = glm::dot(ray_dir, normal);
+    v_point += v_depth * normal / fac;
+    v_normal += v_depth * ((point / fac) -
+                           (glm::dot(point, normal) * ray_dir / (fac * fac)));
+}
+
 #endif // GSPLAT_CUDA_UTILS_H
