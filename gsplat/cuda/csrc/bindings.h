@@ -96,20 +96,14 @@ fully_fused_projection_fwd_tensor(
     const bool calc_compensations
 );
 
-std::tuple<
-    torch::Tensor,
-    torch::Tensor,
-    torch::Tensor,
-    torch::Tensor,
-    torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 fully_fused_projection_bwd_tensor(
     // fwd inputs
-    const torch::Tensor &means,                // [N, 3]
-    const at::optional<torch::Tensor> &covars, // [N, 6] optional
-    const at::optional<torch::Tensor> &quats,  // [N, 4] optional
-    const at::optional<torch::Tensor> &scales, // [N, 3] optional
-    const torch::Tensor &viewmats,             // [C, 4, 4]
-    const torch::Tensor &Ks,                   // [C, 3, 3]
+    const torch::Tensor &means,    // [N, 3]
+    const torch::Tensor &quats,    // [N, 4]
+    const torch::Tensor &scales,   // [N, 3]
+    const torch::Tensor &viewmats, // [C, 4, 4]
+    const torch::Tensor &Ks,       // [C, 3, 3]
     const uint32_t image_width,
     const uint32_t image_height,
     const float eps2d,
