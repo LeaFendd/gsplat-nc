@@ -20,6 +20,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     const vec2<S> *__restrict__ means2d, // [C, N, 2] or [nnz, 2]
     const vec3<S> *__restrict__ conics,  // [C, N, 3] or [nnz, 3]
     const vec3<S> *__restrict__ normals, // [C, N, 3] or [nnz, 3]
+    const S *__restrict__ depths,        // [C, N] or [nnz]
     const S *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
     const S *__restrict__ opacities,   // [C, N] or [nnz]
     const S *__restrict__ backgrounds, // [C, COLOR_DIM]
@@ -34,6 +35,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     S *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     vec3<S> *__restrict__ render_normals, // [C, image_height, image_width, 3]
     S *__restrict__ render_norm_uc,       // [C, image_height, image_width, 1]
+    S *__restrict__ render_depths,        // [C, image_height, image_width, 1]
     int32_t *__restrict__ last_ids        // [C, image_height, image_width]
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
@@ -51,6 +53,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     render_alphas += camera_id * image_height * image_width;
     render_normals += camera_id * image_height * image_width;
     render_norm_uc += camera_id * image_height * image_width;
+    render_depths += camera_id * image_height * image_width;
     last_ids += camera_id * image_height * image_width;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
@@ -86,6 +89,8 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         ); // [block_size]
     vec3<S> *normal_batch =
         reinterpret_cast<vec3<S> *>(&conic_batch[block_size]); // [block_size]
+    S *depth_batch =
+        reinterpret_cast<S *>(&normal_batch[block_size]); // [block_size]
 
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
@@ -103,6 +108,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     S pix_out[COLOR_DIM] = {0.f};
     vec3<S> normal_out = {0.f, 0.f, 0.f};
     S norm_uc_out = 0.f;
+    S depth_out = 0.f;
 
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
@@ -123,6 +129,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             xy_opacity_batch[tr] = {xy.x, xy.y, opac};
             conic_batch[tr] = conics[g];
             normal_batch[tr] = normals[g];
+            depth_batch[tr] = depths[g];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -155,6 +162,8 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             // TODO need formula link here
             norm_uc_out += vis * (T - glm::dot(normal_out, normal_batch[t]));
             normal_out += normal_batch[t] * vis;
+            // render depth
+            depth_out += depth_batch[t] * vis;
 
             const S *c_ptr = colors + g * COLOR_DIM;
             PRAGMA_UNROLL
@@ -176,6 +185,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         render_alphas[pix_id] = 1.0f - T;
         render_normals[pix_id] = normal_out;
         render_norm_uc[pix_id] = norm_uc_out;
+        render_depths[pix_id] = depth_out;
         PRAGMA_UNROLL
         for (uint32_t k = 0; k < COLOR_DIM; ++k) {
             render_colors[pix_id * COLOR_DIM + k] =
@@ -193,12 +203,14 @@ std::tuple<
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
+    torch::Tensor,
     torch::Tensor>
 call_kernel_with_dim(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &normals,   // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &depths,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
@@ -214,6 +226,7 @@ call_kernel_with_dim(
     CHECK_INPUT(means2d);
     CHECK_INPUT(conics);
     CHECK_INPUT(normals);
+    CHECK_INPUT(depths);
     CHECK_INPUT(colors);
     CHECK_INPUT(opacities);
     CHECK_INPUT(tile_offsets);
@@ -251,14 +264,19 @@ call_kernel_with_dim(
         {C, image_height, image_width, 1},
         means2d.options().dtype(torch::kFloat32)
     );
+    torch::Tensor render_depths = torch::empty(
+        {C, image_height, image_width, 1},
+        means2d.options().dtype(torch::kFloat32)
+    );
     torch::Tensor last_ids = torch::empty(
         {C, image_height, image_width}, means2d.options().dtype(torch::kInt32)
     );
 
     at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
-    const uint32_t shared_mem = tile_size * tile_size *
-                                (sizeof(int32_t) + sizeof(vec3<float>) +
-                                 sizeof(vec3<float>) + sizeof(vec3<float>));
+    const uint32_t shared_mem =
+        tile_size * tile_size *
+        (sizeof(int32_t) + sizeof(vec3<float>) + sizeof(vec3<float>) +
+         sizeof(vec3<float>) + sizeof(float));
 
     // TODO: an optimization can be done by passing the actual number of
     // channels into the kernel functions and avoid necessary global memory
@@ -283,6 +301,7 @@ call_kernel_with_dim(
             reinterpret_cast<vec2<float> *>(means2d.data_ptr<float>()),
             reinterpret_cast<vec3<float> *>(conics.data_ptr<float>()),
             reinterpret_cast<vec3<float> *>(normals.data_ptr<float>()),
+            depths.data_ptr<float>(),
             colors.data_ptr<float>(),
             opacities.data_ptr<float>(),
             backgrounds.has_value() ? backgrounds.value().data_ptr<float>()
@@ -298,15 +317,17 @@ call_kernel_with_dim(
             alphas.data_ptr<float>(),
             reinterpret_cast<vec3<float> *>(render_normals.data_ptr<float>()),
             render_norm_uc.data_ptr<float>(),
+            render_depths.data_ptr<float>(),
             last_ids.data_ptr<int32_t>()
         );
 
     return std::make_tuple(
-        renders, alphas, render_normals, render_norm_uc, last_ids
+        renders, alphas, render_normals, render_norm_uc, render_depths, last_ids
     );
 }
 
 std::tuple<
+    torch::Tensor,
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
@@ -317,6 +338,7 @@ rasterize_to_pixels_fwd_tensor(
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &normals,   // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &depths,    // [C, N]  or [nnz]
     const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
@@ -337,6 +359,7 @@ rasterize_to_pixels_fwd_tensor(
             means2d,                                                           \
             conics,                                                            \
             normals,                                                           \
+            depths,                                                            \
             colors,                                                            \
             opacities,                                                         \
             backgrounds,                                                       \

@@ -371,6 +371,7 @@ def rasterize_to_pixels(
     means2d: Tensor,  # [C, N, 2] or [nnz, 2]
     conics: Tensor,  # [C, N, 3] or [nnz, 3]
     normals: Tensor,  # [C, N, 3] or [nnz, 3]
+    depths: Tensor,  # [C, N] or [nnz]
     colors: Tensor,  # [C, N, channels] or [nnz, channels]
     opacities: Tensor,  # [C, N] or [nnz]
     image_width: int,
@@ -478,11 +479,12 @@ def rasterize_to_pixels(
         tile_width * tile_size >= image_width
     ), f"Assert Failed: {tile_width} * {tile_size} >= {image_width}"
 
-    render_colors, render_alphas, render_normals, render_norm_uc = (
+    render_colors, render_alphas, render_normals, render_norm_uc, render_depths = (
         _RasterizeToPixels.apply(
             means2d.contiguous(),
             conics.contiguous(),
             normals.contiguous(),
+            depths.contiguous(),
             colors.contiguous(),
             opacities.contiguous(),
             backgrounds,
@@ -497,7 +499,7 @@ def rasterize_to_pixels(
 
     if padded_channels > 0:
         render_colors = render_colors[..., :-padded_channels]
-    return render_colors, render_alphas, render_normals, render_norm_uc
+    return render_colors, render_alphas, render_normals, render_norm_uc, render_depths
 
 
 @torch.no_grad()
@@ -805,6 +807,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         means2d: Tensor,  # [C, N, 2]
         conics: Tensor,  # [C, N, 3]
         normals: Tensor,  # [C, N, 3]
+        depths: Tensor,  # [C, N]
         colors: Tensor,  # [C, N, D]
         opacities: Tensor,  # [C, N]
         backgrounds: Tensor,  # [C, D], Optional
@@ -815,20 +818,26 @@ class _RasterizeToPixels(torch.autograd.Function):
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, render_normals, render_norm_uc, last_ids = (
-            _make_lazy_cuda_func("rasterize_to_pixels_fwd")(
-                means2d,
-                conics,
-                normals,
-                colors,
-                opacities,
-                backgrounds,
-                width,
-                height,
-                tile_size,
-                isect_offsets,
-                flatten_ids,
-            )
+        (
+            render_colors,
+            render_alphas,
+            render_normals,
+            render_norm_uc,
+            render_depths,
+            last_ids,
+        ) = _make_lazy_cuda_func("rasterize_to_pixels_fwd")(
+            means2d,
+            conics,
+            normals,
+            depths,
+            colors,
+            opacities,
+            backgrounds,
+            width,
+            height,
+            tile_size,
+            isect_offsets,
+            flatten_ids,
         )
 
         ctx.save_for_backward(
@@ -851,7 +860,13 @@ class _RasterizeToPixels(torch.autograd.Function):
 
         # double to float
         render_alphas = render_alphas.float()
-        return render_colors, render_alphas, render_normals, render_norm_uc
+        return (
+            render_colors,
+            render_alphas,
+            render_normals,
+            render_norm_uc,
+            render_depths,
+        )
 
     @staticmethod
     def backward(
@@ -860,6 +875,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         v_render_alphas: Tensor,  # [C, H, W, 1]
         v_render_normals: Tensor,  # [C, H, W, 3]
         v_render_norm_uc: Tensor,  # [C, H, W, 1]
+        v_render_depths: Tensor,  # [C, H, W, 1]
     ):
         (
             means2d,
@@ -911,7 +927,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         if absgrad:
             means2d.absgrad = v_means2d_abs
 
-        if ctx.needs_input_grad[5]:
+        if ctx.needs_input_grad[6]:
             v_backgrounds = (v_render_colors * (1.0 - render_alphas).float()).sum(
                 dim=(1, 2)
             )
@@ -922,6 +938,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_means2d,
             v_conics,
             v_normals,
+            None,
             v_colors,
             v_opacities,
             v_backgrounds,

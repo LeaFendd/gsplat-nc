@@ -146,12 +146,14 @@ std::tuple<
     torch::Tensor,
     torch::Tensor,
     torch::Tensor,
+    torch::Tensor,
     torch::Tensor>
 rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
     const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
     const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
     const torch::Tensor &normals,   // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &depths,    // [C, N]  or [nnz]
     const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
