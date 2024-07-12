@@ -848,12 +848,14 @@ class _RasterizeToPixels(torch.autograd.Function):
         ctx.save_for_backward(
             means2d,
             conics,
+            normals,
             colors,
             opacities,
             backgrounds,
             isect_offsets,
             flatten_ids,
             render_alphas,
+            render_normals,
             last_ids,
         )
         ctx.width = width
@@ -870,16 +872,20 @@ class _RasterizeToPixels(torch.autograd.Function):
         ctx,
         v_render_colors: Tensor,  # [C, H, W, 3]
         v_render_alphas: Tensor,  # [C, H, W, 1]
+        v_render_normals: Tensor,  # [C, H, W, 3]
+        v_render_norm_uc: Tensor,  # [C, H, W, 1]
     ):
         (
             means2d,
             conics,
+            normals,
             colors,
             opacities,
             backgrounds,
             isect_offsets,
             flatten_ids,
             render_alphas,
+            render_normals,
             last_ids,
         ) = ctx.saved_tensors
         width = ctx.width
@@ -891,11 +897,13 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_means2d_abs,
             v_means2d,
             v_conics,
+            v_normals,
             v_colors,
             v_opacities,
         ) = _make_lazy_cuda_func("rasterize_to_pixels_bwd")(
             means2d,
             conics,
+            normals,
             colors,
             opacities,
             backgrounds,
@@ -905,16 +913,18 @@ class _RasterizeToPixels(torch.autograd.Function):
             isect_offsets,
             flatten_ids,
             render_alphas,
+            render_normals,
             last_ids,
             v_render_colors.contiguous(),
             v_render_alphas.contiguous(),
+            v_render_norm_uc.contiguous(),
             absgrad,
         )
 
         if absgrad:
             means2d.absgrad = v_means2d_abs
 
-        if ctx.needs_input_grad[4]:
+        if ctx.needs_input_grad[5]:
             v_backgrounds = (v_render_colors * (1.0 - render_alphas).float()).sum(
                 dim=(1, 2)
             )
@@ -924,6 +934,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         return (
             v_means2d,
             v_conics,
+            v_normals,
             v_colors,
             v_opacities,
             v_backgrounds,
