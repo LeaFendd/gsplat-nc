@@ -18,12 +18,11 @@ template <typename T>
 __global__ void fully_fused_projection_fwd_kernel(
     const uint32_t C,
     const uint32_t N,
-    const T *__restrict__ means,    // [N, 3]
-    const T *__restrict__ covars,   // [N, 6] optional
-    const T *__restrict__ quats,    // [N, 4] optional
-    const T *__restrict__ scales,   // [N, 3] optional
-    const T *__restrict__ viewmats, // [C, 4, 4]
-    const T *__restrict__ Ks,       // [C, 3, 3]
+    const vec3<T> *__restrict__ means,  // [N, 3]
+    const vec4<T> *__restrict__ quats,  // [N, 4]
+    const vec3<T> *__restrict__ scales, // [N, 3]
+    const T *__restrict__ viewmats,     // [C, 4, 4]
+    const T *__restrict__ Ks,           // [C, 3, 3]
     const int32_t image_width,
     const int32_t image_height,
     const T eps2d,
@@ -31,12 +30,12 @@ __global__ void fully_fused_projection_fwd_kernel(
     const T far_plane,
     const T radius_clip,
     // outputs
-    int32_t *__restrict__ radii,  // [C, N]
-    T *__restrict__ means2d,      // [C, N, 2]
-    T *__restrict__ depths,       // [C, N]
-    T *__restrict__ conics,       // [C, N, 3]
-    T *__restrict__ normals,      // [C, N, 3]
-    T *__restrict__ compensations // [C, N] optional
+    int32_t *__restrict__ radii,   // [C, N]
+    vec2<T> *__restrict__ means2d, // [C, N, 2]
+    T *__restrict__ depths,        // [C, N]
+    vec3<T> *__restrict__ conics,  // [C, N, 3]
+    vec3<T> *__restrict__ normals, // [C, N, 3]
+    T *__restrict__ compensations  // [C, N] optional
 ) {
     // parallelize over C * N.
     uint32_t idx = cg::this_grid().thread_rank();
@@ -47,7 +46,12 @@ __global__ void fully_fused_projection_fwd_kernel(
     const uint32_t gid = idx % N; // gaussian id
 
     // shift pointers to the current camera and gaussian
-    means += gid * 3;
+    // means += gid;
+    // quats += gid;
+    // scales += gid;
+    vec3<T> mean = means[gid];
+    vec4<T> quat = quats[gid];
+    vec3<T> scale = scales[gid];
     viewmats += cid * 16;
     Ks += cid * 9;
 
@@ -67,7 +71,7 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // transform Gaussian center to camera space
     vec3<T> mean_c;
-    pos_world_to_cam(R, t, glm::make_vec3(means), mean_c);
+    pos_world_to_cam<T>(R, t, mean, mean_c);
     if (mean_c.z < near_plane || mean_c.z > far_plane) {
         radii[idx] = 0;
         return;
@@ -75,34 +79,17 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // transform Gaussian covariance to camera space
     mat3<T> covar;
-    vec3<T> normal(1.f);
-    vec3<T> normal_c(2.f); // in camera space
-    if (covars != nullptr) {
-        covars += gid * 6;
-        covar = mat3<T>(
-            covars[0],
-            covars[1],
-            covars[2], // 1st column
-            covars[1],
-            covars[3],
-            covars[4], // 2nd column
-            covars[2],
-            covars[4],
-            covars[5] // 3rd column
-        );
-    } else {
-        // compute from quaternions and scales
-        quats += gid * 4;
-        scales += gid * 3;
-        quat_scale_to_covar_preci<T>(
-            glm::make_vec4(quats), glm::make_vec3(scales), &covar, nullptr
-        );
-        // NOTE we only compute normals when quats provided
-        quat_to_normal(glm::make_vec4(quats), normal);
-        normal_c = R * normal;
-    }
+    vec3<T> normal;
+    vec3<T> normal_c; // in camera space
+
+    // compute from quaternions and scales
+    quat_scale_to_covar_preci<T>(quat, scale, &covar, nullptr);
+    // NOTE we only compute normals when quats provided
+    quat_to_normal<T>(quat, normal);
+    normal_c = R * normal;
+
     mat3<T> covar_c;
-    covar_world_to_cam(R, covar, covar_c);
+    covar_world_to_cam<T>(R, covar, covar_c);
 
     // perspective projection
     mat2<T> covar2d;
@@ -121,7 +108,7 @@ __global__ void fully_fused_projection_fwd_kernel(
     );
 
     T compensation;
-    T det = add_blur(eps2d, covar2d, compensation);
+    T det = add_blur<T>(eps2d, covar2d, compensation);
     if (det <= 0.f) {
         radii[idx] = 0;
         return;
@@ -129,7 +116,7 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // compute the inverse of the 2d covariance
     mat2<T> covar2d_inv;
-    inverse(covar2d, covar2d_inv);
+    inverse<T>(covar2d, covar2d_inv);
 
     // take 3 sigma as the radius (non differentiable)
     T b = 0.5f * (covar2d[0][0] + covar2d[1][1]);
@@ -152,15 +139,10 @@ __global__ void fully_fused_projection_fwd_kernel(
 
     // write to outputs
     radii[idx] = (int32_t)radius;
-    means2d[idx * 2] = mean2d.x;
-    means2d[idx * 2 + 1] = mean2d.y;
+    means2d[idx] = mean2d;
     depths[idx] = mean_c.z;
-    conics[idx * 3] = covar2d_inv[0][0];
-    conics[idx * 3 + 1] = covar2d_inv[0][1];
-    conics[idx * 3 + 2] = covar2d_inv[1][1];
-    normals[idx * 3] = normal_c.x;
-    normals[idx * 3 + 1] = normal_c.y;
-    normals[idx * 3 + 2] = normal_c.z;
+    conics[idx] = {covar2d_inv[0][0], covar2d_inv[0][1], covar2d_inv[1][1]};
+    normals[idx] = normal_c;
     if (compensations != nullptr) {
         compensations[idx] = compensation;
     }
@@ -174,12 +156,11 @@ std::tuple<
     torch::Tensor,
     torch::Tensor>
 fully_fused_projection_fwd_tensor(
-    const torch::Tensor &means,                // [N, 3]
-    const at::optional<torch::Tensor> &covars, // [N, 6] optional
-    const at::optional<torch::Tensor> &quats,  // [N, 4] optional
-    const at::optional<torch::Tensor> &scales, // [N, 3] optional
-    const torch::Tensor &viewmats,             // [C, 4, 4]
-    const torch::Tensor &Ks,                   // [C, 3, 3]
+    const torch::Tensor &means,    // [N, 3]
+    const torch::Tensor &quats,    // [N, 4]
+    const torch::Tensor &scales,   // [N, 3]
+    const torch::Tensor &viewmats, // [C, 4, 4]
+    const torch::Tensor &Ks,       // [C, 3, 3]
     const uint32_t image_width,
     const uint32_t image_height,
     const float eps2d,
@@ -190,13 +171,8 @@ fully_fused_projection_fwd_tensor(
 ) {
     DEVICE_GUARD(means);
     CHECK_INPUT(means);
-    if (covars.has_value()) {
-        CHECK_INPUT(covars.value());
-    } else {
-        assert(quats.has_value() && scales.has_value());
-        CHECK_INPUT(quats.value());
-        CHECK_INPUT(scales.value());
-    }
+    CHECK_INPUT(quats);
+    CHECK_INPUT(scales);
     CHECK_INPUT(viewmats);
     CHECK_INPUT(Ks);
 
@@ -220,10 +196,9 @@ fully_fused_projection_fwd_tensor(
             <<<(C * N + N_THREADS - 1) / N_THREADS, N_THREADS, 0, stream>>>(
                 C,
                 N,
-                means.data_ptr<float>(),
-                covars.has_value() ? covars.value().data_ptr<float>() : nullptr,
-                quats.has_value() ? quats.value().data_ptr<float>() : nullptr,
-                scales.has_value() ? scales.value().data_ptr<float>() : nullptr,
+                reinterpret_cast<vec3<float> *>(means.data_ptr<float>()),
+                reinterpret_cast<vec4<float> *>(quats.data_ptr<float>()),
+                reinterpret_cast<vec3<float> *>(scales.data_ptr<float>()),
                 viewmats.data_ptr<float>(),
                 Ks.data_ptr<float>(),
                 image_width,
@@ -233,10 +208,10 @@ fully_fused_projection_fwd_tensor(
                 far_plane,
                 radius_clip,
                 radii.data_ptr<int32_t>(),
-                means2d.data_ptr<float>(),
+                reinterpret_cast<vec2<float> *>(means2d.data_ptr<float>()),
                 depths.data_ptr<float>(),
-                conics.data_ptr<float>(),
-                normals.data_ptr<float>(),
+                reinterpret_cast<vec3<float> *>(conics.data_ptr<float>()),
+                reinterpret_cast<vec3<float> *>(normals.data_ptr<float>()),
                 calc_compensations ? compensations.data_ptr<float>() : nullptr
             );
     }

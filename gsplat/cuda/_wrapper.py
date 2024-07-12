@@ -259,7 +259,6 @@ def fully_fused_projection(
     else:
         return _FullyFusedProjection.apply(
             means,
-            covars,
             quats,
             scales,
             viewmats,
@@ -699,7 +698,6 @@ class _FullyFusedProjection(torch.autograd.Function):
     def forward(
         ctx,
         means: Tensor,  # [N, 3]
-        covars: Tensor,  # [N, 6] or None
         quats: Tensor,  # [N, 4] or None
         scales: Tensor,  # [N, 3] or None
         viewmats: Tensor,  # [C, 4, 4]
@@ -717,7 +715,6 @@ class _FullyFusedProjection(torch.autograd.Function):
             "fully_fused_projection_fwd"
         )(
             means,
-            covars,
             quats,
             scales,
             viewmats,
@@ -733,7 +730,7 @@ class _FullyFusedProjection(torch.autograd.Function):
         if not calc_compensations:
             compensations = None
         ctx.save_for_backward(
-            means, covars, quats, scales, viewmats, Ks, radii, conics, compensations
+            means, quats, scales, viewmats, Ks, radii, conics, compensations
         )
         ctx.width = width
         ctx.height = height
@@ -747,7 +744,6 @@ class _FullyFusedProjection(torch.autograd.Function):
     ):
         (
             means,
-            covars,
             quats,
             scales,
             viewmats,
@@ -761,11 +757,10 @@ class _FullyFusedProjection(torch.autograd.Function):
         eps2d = ctx.eps2d
         if v_compensations is not None:
             v_compensations = v_compensations.contiguous()
-        v_means, v_covars, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(
+        v_means, v_quats, v_scales, v_viewmats = _make_lazy_cuda_func(
             "fully_fused_projection_bwd"
         )(
             means,
-            covars,
             quats,
             scales,
             viewmats,
@@ -781,21 +776,12 @@ class _FullyFusedProjection(torch.autograd.Function):
             v_conics.contiguous(),
             v_normals.contiguous(),
             v_compensations,
-            ctx.needs_input_grad[4],  # viewmats_requires_grad
+            ctx.needs_input_grad[3],  # viewmats_requires_grad
         )
-        if not ctx.needs_input_grad[0]:
-            v_means = None
-        if not ctx.needs_input_grad[1]:
-            v_covars = None
-        if not ctx.needs_input_grad[2]:
-            v_quats = None
         if not ctx.needs_input_grad[3]:
-            v_scales = None
-        if not ctx.needs_input_grad[4]:
             v_viewmats = None
         return (
             v_means,
-            v_covars,
             v_quats,
             v_scales,
             v_viewmats,
