@@ -341,6 +341,7 @@ call_kernel_with_dim(
     CHECK_INPUT(last_ids);
     CHECK_INPUT(v_render_colors);
     CHECK_INPUT(v_render_alphas);
+    CHECK_INPUT(v_render_normals);
     CHECK_INPUT(v_render_norm_uc);
     if (backgrounds.has_value()) {
         CHECK_INPUT(backgrounds.value());
