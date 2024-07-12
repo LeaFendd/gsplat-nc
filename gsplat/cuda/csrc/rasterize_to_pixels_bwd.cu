@@ -37,8 +37,10 @@ __global__ void rasterize_to_pixels_bwd_kernel(
         *__restrict__ render_normals,     // [C, image_height, image_width, 3]
     const int32_t *__restrict__ last_ids, // [C, image_height, image_width]
     // grad outputs
-    const S *__restrict__ v_render_colors,  // [C, image_height, image_width, D]
-    const S *__restrict__ v_render_alphas,  // [C, image_height, image_width, 1]
+    const S *__restrict__ v_render_colors, // [C, image_height, image_width, D]
+    const S *__restrict__ v_render_alphas, // [C, image_height, image_width, 1]
+    const vec3<S>
+        *__restrict__ v_render_normals,     // [C, image_height, image_width, 3]
     const S *__restrict__ v_render_norm_uc, // [C, image_height, image_width, 1]
     // grad inputs
     vec2<S> *__restrict__ v_means2d_abs, // [C, N, 2] or [nnz, 2]
@@ -60,6 +62,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     last_ids += camera_id * image_height * image_width;
     v_render_colors += camera_id * image_height * image_width * COLOR_DIM;
     v_render_alphas += camera_id * image_height * image_width;
+    v_render_normals += camera_id * image_height * image_width;
     v_render_norm_uc += camera_id * image_height * image_width;
     if (backgrounds != nullptr) {
         backgrounds += camera_id * COLOR_DIM;
@@ -114,6 +117,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     }
     const S v_render_a = v_render_alphas[pix_id];
     const S v_render_uc = v_render_norm_uc[pix_id];
+    const vec3<S> v_render_norm = v_render_normals[pix_id];
     // prepare for normal_uc_loss
     vec3<S> acc_vis_normal = render_normals[pix_id];
 
@@ -240,7 +244,9 @@ __global__ void rasterize_to_pixels_bwd_kernel(
                     buffer[k] += rgbs_batch[t * COLOR_DIM + k] * fac;
                 }
 
-                // contribution from normals
+                // contribution from v_render_normals
+                v_normal_local += fac * v_render_norm;
+                // contribution from v_render_uc
                 acc_vis_normal -= fac * normals[t];
                 v_normal_local += fac * acc_vis_normal * v_render_uc;
             }
@@ -316,6 +322,7 @@ call_kernel_with_dim(
     // gradients of outputs
     const torch::Tensor &v_render_colors,  // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas,  // [C, image_height, image_width, 1]
+    const torch::Tensor &v_render_normals, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_norm_uc, // [C, image_height, image_width, 1]
     // options
     bool absgrad
@@ -407,6 +414,9 @@ call_kernel_with_dim(
                 last_ids.data_ptr<int32_t>(),
                 v_render_colors.data_ptr<float>(),
                 v_render_alphas.data_ptr<float>(),
+                reinterpret_cast<vec3<float> *>(
+                    v_render_normals.data_ptr<float>()
+                ),
                 v_render_norm_uc.data_ptr<float>(),
                 absgrad ? reinterpret_cast<vec2<float> *>(
                               v_means2d_abs.data_ptr<float>()
@@ -454,6 +464,7 @@ rasterize_to_pixels_bwd_tensor(
     // gradients of outputs
     const torch::Tensor &v_render_colors,  // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_alphas,  // [C, image_height, image_width, 1]
+    const torch::Tensor &v_render_normals, // [C, image_height, image_width, 3]
     const torch::Tensor &v_render_norm_uc, // [C, image_height, image_width, 1]
     // options
     bool absgrad
@@ -481,6 +492,7 @@ rasterize_to_pixels_bwd_tensor(
             last_ids,                                                          \
             v_render_colors,                                                   \
             v_render_alphas,                                                   \
+            v_render_normals,                                                  \
             v_render_norm_uc,                                                  \
             absgrad                                                            \
         );

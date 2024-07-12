@@ -917,6 +917,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             last_ids,
             v_render_colors.contiguous(),
             v_render_alphas.contiguous(),
+            v_render_normals.contiguous(),
             v_render_norm_uc.contiguous(),
             absgrad,
         )
